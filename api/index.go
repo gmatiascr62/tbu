@@ -13,7 +13,7 @@ func init() {
 
 	router = gin.New()
 
-	router.GET("/", func(c *gin.Context) {
+	router.GET("/api", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "Hola mundo desde Gin 🚀",
 		})

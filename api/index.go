@@ -1,10 +1,25 @@
 package handler
- 
+
 import (
-  "fmt"
-  "net/http"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
 )
- 
+
+var router *gin.Engine
+
+func init() {
+	gin.SetMode(gin.ReleaseMode)
+
+	router = gin.New()
+
+	router.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Hola mundo desde Gin 🚀",
+		})
+	})
+}
+
 func Handler(w http.ResponseWriter, r *http.Request) {
-  fmt.Fprintf(w, "<h1>Hello from Go!</h1>")
+	router.ServeHTTP(w, r)
 }

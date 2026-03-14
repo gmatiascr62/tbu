@@ -18,7 +18,7 @@ func init() {
 			"message": "Hola mundo desde Gin 🚀",
 		})
 	})
-	router.GET("/test", func(c *gin.Context) {
+	router.GET("/api/test", func(c *gin.Context) {
   	c.JSON(200, gin.H{
   		"status": "ok",
   	})

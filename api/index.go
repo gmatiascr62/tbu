@@ -1743,6 +1743,7 @@ func init() {
 			"http://127.0.0.1:5500",
 			"https://tuky-front.vercel.app",
 			"https://flash-chat.live",
+			"https://www.flash-chat.live",
 		},
 		AllowMethods: []string{
 			"GET",

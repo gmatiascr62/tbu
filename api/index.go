@@ -169,6 +169,7 @@ var ErrCannotFriendSelf = errors.New("cannot send friend request to self")
 var ErrTargetProfileNotFound = errors.New("target profile not found")
 var ErrAlreadyFriends = errors.New("already friends")
 var ErrPendingRequestAlreadyExists = errors.New("pending friend request already exists")
+var ErrFriendRequestNotFound = errors.New("friend request not found")
 type FriendRequestRepository struct {
 	db *pgxpool.Pool
 }
@@ -319,7 +320,7 @@ func (r *FriendRequestRepository) Accept(ctx context.Context, requestID, current
 	`, requestID).Scan(&fromUserID, &toUserID, &status)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrTargetProfileNotFound
+			return ErrFriendRequestNotFound
 		}
 		return err
 	}
@@ -748,8 +749,6 @@ func GetPool() (*pgxpool.Pool, error) {
 
 		cfg := Load()
 
-		fmt.Println("DATABASE_URL presente:", cfg.DatabaseURL != "")
-		fmt.Println("DATABASE_URL:", cfg.DatabaseURL)
 
 		if cfg.DatabaseURL == "" {
 			err = fmt.Errorf("DATABASE_URL no configurada")
@@ -785,10 +784,11 @@ func GetPool() (*pgxpool.Pool, error) {
 		fmt.Println("Haciendo ping a la ..")
 
 		if pingErr := pool.Ping(ctx); pingErr != nil {
-			fmt.Println("ERROR ping DB:", pingErr)
-			err = fmt.Errorf("ping db: %w", pingErr)
-			return
-		}
+    	pool.Close()
+    	pool = nil
+    	err = fmt.Errorf("ping db: %w", pingErr)
+    	return
+    }
 
 		fmt.Println("Conexión a DB exitosa")
 	})
@@ -1012,21 +1012,32 @@ func AcceptFriendRequest(c *gin.Context) {
 				return
 			}
 
-			if err == ErrTargetProfileNotFound {
-				c.JSON(http.StatusNotFound, gin.H{
-					"success": false,
-					"error":   "request_not_found",
-					"message": "Solicitud no encontrada",
-				})
-				return
-			}
-
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"success": false,
-				"error":   "friend_request_accept_failed",
-				"message": "No se pudo aceptar la solicitud",
-			})
-			return
+			if err != nil {
+      	if errors.Is(err, ErrFriendRequestNotFound) {
+      		c.JSON(http.StatusNotFound, gin.H{
+      			"success": false,
+      			"error":   "friend_request_not_found",
+      			"message": "La solicitud de amistad no existe",
+      		})
+      		return
+      	}
+      
+      	if errors.Is(err, ErrTargetProfileNotFound) {
+      		c.JSON(http.StatusNotFound, gin.H{
+      			"success": false,
+      			"error":   "target_profile_not_found",
+      			"message": "Perfil destino no encontrado",
+      		})
+      		return
+      	}
+      
+      	c.JSON(http.StatusInternalServerError, gin.H{
+      		"success": false,
+      		"error":   "accept_friend_request_failed",
+      		"message": "No se pudo aceptar la solicitud",
+      	})
+      	return
+      }
 		}
 	}
 
@@ -1672,11 +1683,11 @@ func ListUsers(c *gin.Context) {
 	limit := 20
 	if raw := c.Query("limit"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
-		if err != nil {
+		if err != nil || parsed < 1 || parsed > 50 {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"success": false,
 				"error":   "invalid_limit",
-				"message": "limit inválido",
+				"message": "limit debe estar entre 1 y 50",
 			})
 			return
 		}
@@ -1686,7 +1697,7 @@ func ListUsers(c *gin.Context) {
 	offset := 0
 	if raw := c.Query("offset"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
-		if err != nil {
+		if err != nil || parsed < 0 {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"success": false,
 				"error":   "invalid_offset",
@@ -1726,8 +1737,7 @@ func ListUsers(c *gin.Context) {
 		"success": true,
 		"data":    users,
 	})
-} 
-
+}
 //router
 func init() {
 	gin.SetMode(gin.ReleaseMode)

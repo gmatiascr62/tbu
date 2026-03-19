@@ -639,12 +639,6 @@ func (r *ProfileRepository) ListUsers(ctx context.Context, currentUserID, search
 		offset = 0
 	}
 
-	search = strings.TrimSpace(strings.ToLower(search))
-	searchPattern := "%"
-	if search != "" {
-		searchPattern = "%" + search + "%"
-	}
-
 	query := `
 		select
 			p.id,
@@ -670,12 +664,11 @@ func (r *ProfileRepository) ListUsers(ctx context.Context, currentUserID, search
 			and fr_received.to_user_id = $1
 			and fr_received.status = 'pending'
 		where p.id <> $1
-		  and ($2 = '%' or p.username_lower like $2)
 		order by p.username_lower asc
-		limit $3 offset $4
+		limit $2 offset $3
 	`
 
-	rows, err := r.db.Query(ctx, query, currentUserID, searchPattern, limit, offset)
+	rows, err := r.db.Query(ctx, query, currentUserID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -1678,7 +1671,6 @@ func ListUsers(c *gin.Context) {
 		return
 	}
 
-	search := c.Query("search")
 
 	limit := 20
 	if raw := c.Query("limit"); raw != "" {
@@ -1723,7 +1715,7 @@ func ListUsers(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	users, err := repo.ListUsers(ctx, user.ID, search, limit, offset)
+	users, err := repo.ListUsers(ctx, user.ID, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,

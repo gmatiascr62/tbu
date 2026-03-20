@@ -631,7 +631,7 @@ func (r *ProfileRepository) GetByID(ctx context.Context, userID string) (*Profil
 
 	return &p, nil
 }
-func (r *ProfileRepository) ListUsers(ctx context.Context, currentUserID, search string, limit, offset int) ([]UserListItem, error) {
+func (r *ProfileRepository) ListUsers(ctx context.Context, currentUserID string, limit, offset int) ([]UserListItem, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}

@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -117,10 +116,10 @@ type UserListItem struct {
 	ID                 string  `json:"id"`
 	Username           string  `json:"username"`
 	AvatarURL          *string `json:"avatar_url"`
+	RelationshipStatus string  `json:"relationship_status"`
 	AddressNumber      *int    `json:"address_number,omitempty"`
 	StreetNumber       *int    `json:"street_number,omitempty"`
 	LotNumber          *int    `json:"lot_number,omitempty"`
-	RelationshipStatus string  `json:"relationship_status"`
 }
 
 // reposotory para db
@@ -578,8 +577,8 @@ func (r *MessageRepository) GetUnreadCounts(ctx context.Context, currentUserID s
 
 var ErrProfileNotFound = errors.New("profile not found")
 var ErrUsernameTaken = errors.New("username already taken")
-var ErrAddressTaken = errors.New("address already taken")
 var ErrProfileAlreadyExists = errors.New("profile already exists")
+var ErrAddressTaken = errors.New("address already taken")
 
 type ProfileRepository struct {
 	db *pgxpool.Pool
@@ -588,31 +587,13 @@ type ProfileRepository struct {
 func NewProfileRepository(db *pgxpool.Pool) *ProfileRepository {
 	return &ProfileRepository{db: db}
 }
-func parseAddressNumber(addressNumber int) (int, int) {
-	streetNumber := addressNumber / 100
-	lotNumber := addressNumber % 100
-	return streetNumber, lotNumber
+
+func decodeAddressNumber(addressNumber int) (int, int) {
+	street := addressNumber / 100
+	lot := addressNumber % 100
+	return street, lot
 }
-func attachAddressToProfile(p *Profile, address sql.NullInt64) {
-	if !address.Valid {
-		return
-	}
-	addressNumber := int(address.Int64)
-	streetNumber, lotNumber := parseAddressNumber(addressNumber)
-	p.AddressNumber = &addressNumber
-	p.StreetNumber = &streetNumber
-	p.LotNumber = &lotNumber
-}
-func attachAddressToUserListItem(u *UserListItem, address sql.NullInt64) {
-	if !address.Valid {
-		return
-	}
-	addressNumber := int(address.Int64)
-	streetNumber, lotNumber := parseAddressNumber(addressNumber)
-	u.AddressNumber = &addressNumber
-	u.StreetNumber = &streetNumber
-	u.LotNumber = &lotNumber
-}
+
 func (r *ProfileRepository) Create(ctx context.Context, userID, username string, addressNumber int) (*Profile, error) {
 	username = strings.TrimSpace(username)
 	usernameLower := strings.ToLower(username)
@@ -624,13 +605,12 @@ func (r *ProfileRepository) Create(ctx context.Context, userID, username string,
 	`
 
 	var p Profile
-	var dbAddress sql.NullInt64
 	err := r.db.QueryRow(ctx, query, userID, username, usernameLower, addressNumber).Scan(
 		&p.ID,
 		&p.Username,
 		&p.AvatarURL,
 		&p.Bio,
-		&dbAddress,
+		&p.AddressNumber,
 		&p.CreatedAt,
 		&p.UpdatedAt,
 	)
@@ -638,11 +618,10 @@ func (r *ProfileRepository) Create(ctx context.Context, userID, username string,
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
 			if pgErr.Code == "23505" {
-				constraintName := strings.ToLower(pgErr.ConstraintName)
-				if strings.Contains(constraintName, "profiles_pkey") {
+				if strings.Contains(pgErr.ConstraintName, "profiles_pkey") {
 					return nil, ErrProfileAlreadyExists
 				}
-				if strings.Contains(constraintName, "address") {
+				if strings.Contains(pgErr.ConstraintName, "address_number") {
 					return nil, ErrAddressTaken
 				}
 				return nil, ErrUsernameTaken
@@ -651,7 +630,11 @@ func (r *ProfileRepository) Create(ctx context.Context, userID, username string,
 		return nil, err
 	}
 
-	attachAddressToProfile(&p, dbAddress)
+	if p.AddressNumber != nil {
+		street, lot := decodeAddressNumber(*p.AddressNumber)
+		p.StreetNumber = &street
+		p.LotNumber = &lot
+	}
 
 	return &p, nil
 }
@@ -663,13 +646,12 @@ func (r *ProfileRepository) GetByID(ctx context.Context, userID string) (*Profil
 	`
 
 	var p Profile
-	var dbAddress sql.NullInt64
 	err := r.db.QueryRow(ctx, query, userID).Scan(
 		&p.ID,
 		&p.Username,
 		&p.AvatarURL,
 		&p.Bio,
-		&dbAddress,
+		&p.AddressNumber,
 		&p.CreatedAt,
 		&p.UpdatedAt,
 	)
@@ -680,13 +662,17 @@ func (r *ProfileRepository) GetByID(ctx context.Context, userID string) (*Profil
 		return nil, err
 	}
 
-	attachAddressToProfile(&p, dbAddress)
+	if p.AddressNumber != nil {
+		street, lot := decodeAddressNumber(*p.AddressNumber)
+		p.StreetNumber = &street
+		p.LotNumber = &lot
+	}
 
 	return &p, nil
 }
 func (r *ProfileRepository) ListUsers(ctx context.Context, currentUserID string, limit, offset int) ([]UserListItem, error) {
-	if limit <= 0 || limit > 50 {
-		limit = 20
+	if limit <= 0 || limit > 999 {
+		limit = 999
 	}
 	if offset < 0 {
 		offset = 0
@@ -697,13 +683,13 @@ func (r *ProfileRepository) ListUsers(ctx context.Context, currentUserID string,
 			p.id,
 			p.username,
 			p.avatar_url,
-			p.address_number,
 			case
 				when f.user_low is not null then 'friend'
 				when fr_sent.id is not null then 'request_sent'
 				when fr_received.id is not null then 'request_received'
 				else 'none'
-			end as relationship_status
+			end as relationship_status,
+			p.address_number
 		from public.profiles p
 		left join public.friends f
 			on (
@@ -731,17 +717,20 @@ func (r *ProfileRepository) ListUsers(ctx context.Context, currentUserID string,
 	var users []UserListItem
 	for rows.Next() {
 		var u UserListItem
-		var dbAddress sql.NullInt64
 		if err := rows.Scan(
 			&u.ID,
 			&u.Username,
 			&u.AvatarURL,
-			&dbAddress,
 			&u.RelationshipStatus,
+			&u.AddressNumber,
 		); err != nil {
 			return nil, err
 		}
-		attachAddressToUserListItem(&u, dbAddress)
+		if u.AddressNumber != nil {
+			street, lot := decodeAddressNumber(*u.AddressNumber)
+			u.StreetNumber = &street
+			u.LotNumber = &lot
+		}
 		users = append(users, u)
 	}
 
@@ -937,6 +926,7 @@ func Me(c *gin.Context) {
 		})
 		return
 	}
+
 
 	pool, err := GetPool()
 	if err != nil {
@@ -1607,20 +1597,11 @@ func ProfileSetup(c *gin.Context) {
 		return
 	}
 
-	if req.AddressNumber < 101 || req.AddressNumber > 999 {
+	if req.AddressNumber < 101 || req.AddressNumber > 999 || req.AddressNumber%100 == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error":   "invalid_address_number",
-			"message": "La dirección debe estar entre 101 y 999",
-		})
-		return
-	}
-
-	if req.AddressNumber%100 == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "invalid_address_number",
-			"message": "El lote no puede terminar en 00",
+			"message": "La dirección debe estar entre 101 y 999 y no puede terminar en 00",
 		})
 		return
 	}
@@ -1650,18 +1631,18 @@ func ProfileSetup(c *gin.Context) {
 				"message": "El username ya está en uso",
 			})
 			return
-		case ErrAddressTaken:
-			c.JSON(http.StatusConflict, gin.H{
-				"success": false,
-				"error":   "address_taken",
-				"message": "Esa dirección ya está ocupada",
-			})
-			return
 		case ErrProfileAlreadyExists:
 			c.JSON(http.StatusConflict, gin.H{
 				"success": false,
 				"error":   "profile_already_exists",
 				"message": "El perfil ya existe",
+			})
+			return
+		case ErrAddressTaken:
+			c.JSON(http.StatusConflict, gin.H{
+				"success": false,
+				"error":   "address_taken",
+				"message": "Esa dirección ya está ocupada",
 			})
 			return
 		default:
@@ -1751,14 +1732,14 @@ func ListUsers(c *gin.Context) {
 		return
 	}
 
-	limit := 20
+	limit := 999
 	if raw := c.Query("limit"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 || parsed > 50 {
+		if err != nil || parsed < 1 || parsed > 999 {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"success": false,
 				"error":   "invalid_limit",
-				"message": "limit debe estar entre 1 y 50",
+				"message": "limit debe estar entre 1 y 999",
 			})
 			return
 		}

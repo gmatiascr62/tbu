@@ -1,41 +1,43 @@
 package handler
 
 import (
-	"time"
 	"context"
-	"errors"
-	"strings"
-	"strconv"
-	"net/http"
-	"sync"
-	"os"
-	"fmt"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/pgconn"
-
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const ContextUserKey = "auth_user"
+
 var (
 	authClientOnce sync.Once
 	authClientInst *Client
-	once sync.Once
-	router *gin.Engine
-	pool *pgxpool.Pool
-	err  error
+	once           sync.Once
+	router         *gin.Engine
+	pool           *pgxpool.Pool
+	err            error
 )
 
-//config
+// config
 type Config struct {
 	SupabaseURL     string
 	SupabaseAnonKey string
 	DatabaseURL     string
 }
+
 func Load() Config {
 	return Config{
 		SupabaseURL:     os.Getenv("SUPABASE_URL"),
@@ -44,7 +46,6 @@ func Load() Config {
 	}
 }
 
-
 type createMessageBody struct {
 	Content string `json:"content"`
 }
@@ -52,10 +53,11 @@ type createFriendRequestBody struct {
 	UserID string `json:"user_id"`
 }
 type setupProfileRequest struct {
-	Username string `json:"username"`
+	Username      string `json:"username"`
+	AddressNumber int    `json:"address_number"`
 }
 
-//models de db
+// models de db
 type AuthUser struct {
 	ID    string `json:"id"`
 	Email string `json:"email"`
@@ -83,26 +85,29 @@ type MessageItem struct {
 	ReadAt     *time.Time `json:"read_at"`
 }
 type Profile struct {
-	ID        string    `json:"id"`
-	Username  string    `json:"username"`
-	AvatarURL *string   `json:"avatar_url"`
-	Bio       *string   `json:"bio"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID            string    `json:"id"`
+	Username      string    `json:"username"`
+	AvatarURL     *string   `json:"avatar_url"`
+	Bio           *string   `json:"bio"`
+	AddressNumber *int      `json:"address_number,omitempty"`
+	StreetNumber  *int      `json:"street_number,omitempty"`
+	LotNumber     *int      `json:"lot_number,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 type SupabaseUser struct {
-	ID               string                 `json:"id"`
-	Email            string                 `json:"email"`
-	Role             string                 `json:"role"`
-	Aud              string                 `json:"aud"`
-	AppMetadata      map[string]any         `json:"app_metadata"`
-	UserMetadata     map[string]any         `json:"user_metadata"`
-	EmailConfirmedAt string                 `json:"email_confirmed_at"`
-	Phone            string                 `json:"phone"`
-	ConfirmedAt      string                 `json:"confirmed_at"`
-	LastSignInAt     string                 `json:"last_sign_in_at"`
-	CreatedAt        string                 `json:"created_at"`
-	UpdatedAt        string                 `json:"updated_at"`
+	ID               string         `json:"id"`
+	Email            string         `json:"email"`
+	Role             string         `json:"role"`
+	Aud              string         `json:"aud"`
+	AppMetadata      map[string]any `json:"app_metadata"`
+	UserMetadata     map[string]any `json:"user_metadata"`
+	EmailConfirmedAt string         `json:"email_confirmed_at"`
+	Phone            string         `json:"phone"`
+	ConfirmedAt      string         `json:"confirmed_at"`
+	LastSignInAt     string         `json:"last_sign_in_at"`
+	CreatedAt        string         `json:"created_at"`
+	UpdatedAt        string         `json:"updated_at"`
 }
 type UnreadCountItem struct {
 	UserID      string `json:"user_id"`
@@ -112,13 +117,17 @@ type UserListItem struct {
 	ID                 string  `json:"id"`
 	Username           string  `json:"username"`
 	AvatarURL          *string `json:"avatar_url"`
+	AddressNumber      *int    `json:"address_number,omitempty"`
+	StreetNumber       *int    `json:"street_number,omitempty"`
+	LotNumber          *int    `json:"lot_number,omitempty"`
 	RelationshipStatus string  `json:"relationship_status"`
 }
 
-//reposotory para db
+// reposotory para db
 type FriendRepository struct {
 	db *pgxpool.Pool
 }
+
 func NewFriendRepository(db *pgxpool.Pool) *FriendRepository {
 	return &FriendRepository{db: db}
 }
@@ -170,9 +179,11 @@ var ErrTargetProfileNotFound = errors.New("target profile not found")
 var ErrAlreadyFriends = errors.New("already friends")
 var ErrPendingRequestAlreadyExists = errors.New("pending friend request already exists")
 var ErrFriendRequestNotFound = errors.New("friend request not found")
+
 type FriendRequestRepository struct {
 	db *pgxpool.Pool
 }
+
 func NewFriendRequestRepository(db *pgxpool.Pool) *FriendRequestRepository {
 	return &FriendRequestRepository{db: db}
 }
@@ -372,9 +383,11 @@ func (r *FriendRequestRepository) Accept(ctx context.Context, requestID, current
 }
 
 var ErrNotFriends = errors.New("users are not friends")
+
 type MessageRepository struct {
 	db *pgxpool.Pool
 }
+
 func NewMessageRepository(db *pgxpool.Pool) *MessageRepository {
 	return &MessageRepository{db: db}
 }
@@ -565,29 +578,59 @@ func (r *MessageRepository) GetUnreadCounts(ctx context.Context, currentUserID s
 
 var ErrProfileNotFound = errors.New("profile not found")
 var ErrUsernameTaken = errors.New("username already taken")
+var ErrAddressTaken = errors.New("address already taken")
 var ErrProfileAlreadyExists = errors.New("profile already exists")
+
 type ProfileRepository struct {
 	db *pgxpool.Pool
 }
+
 func NewProfileRepository(db *pgxpool.Pool) *ProfileRepository {
 	return &ProfileRepository{db: db}
 }
-func (r *ProfileRepository) Create(ctx context.Context, userID, username string) (*Profile, error) {
+func parseAddressNumber(addressNumber int) (int, int) {
+	streetNumber := addressNumber / 100
+	lotNumber := addressNumber % 100
+	return streetNumber, lotNumber
+}
+func attachAddressToProfile(p *Profile, address sql.NullInt64) {
+	if !address.Valid {
+		return
+	}
+	addressNumber := int(address.Int64)
+	streetNumber, lotNumber := parseAddressNumber(addressNumber)
+	p.AddressNumber = &addressNumber
+	p.StreetNumber = &streetNumber
+	p.LotNumber = &lotNumber
+}
+func attachAddressToUserListItem(u *UserListItem, address sql.NullInt64) {
+	if !address.Valid {
+		return
+	}
+	addressNumber := int(address.Int64)
+	streetNumber, lotNumber := parseAddressNumber(addressNumber)
+	u.AddressNumber = &addressNumber
+	u.StreetNumber = &streetNumber
+	u.LotNumber = &lotNumber
+}
+func (r *ProfileRepository) Create(ctx context.Context, userID, username string, addressNumber int) (*Profile, error) {
 	username = strings.TrimSpace(username)
 	usernameLower := strings.ToLower(username)
 
 	query := `
-		insert into public.profiles (id, username, username_lower)
-		values ($1, $2, $3)
-		returning id, username, avatar_url, bio, created_at, updated_at
+		insert into public.profiles (id, username, username_lower, address_number)
+		values ($1, $2, $3, $4)
+		returning id, username, avatar_url, bio, address_number, created_at, updated_at
 	`
 
 	var p Profile
-	err := r.db.QueryRow(ctx, query, userID, username, usernameLower).Scan(
+	var dbAddress sql.NullInt64
+	err := r.db.QueryRow(ctx, query, userID, username, usernameLower, addressNumber).Scan(
 		&p.ID,
 		&p.Username,
 		&p.AvatarURL,
 		&p.Bio,
+		&dbAddress,
 		&p.CreatedAt,
 		&p.UpdatedAt,
 	)
@@ -595,8 +638,12 @@ func (r *ProfileRepository) Create(ctx context.Context, userID, username string)
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
 			if pgErr.Code == "23505" {
-				if strings.Contains(pgErr.ConstraintName, "profiles_pkey") {
+				constraintName := strings.ToLower(pgErr.ConstraintName)
+				if strings.Contains(constraintName, "profiles_pkey") {
 					return nil, ErrProfileAlreadyExists
+				}
+				if strings.Contains(constraintName, "address") {
+					return nil, ErrAddressTaken
 				}
 				return nil, ErrUsernameTaken
 			}
@@ -604,21 +651,25 @@ func (r *ProfileRepository) Create(ctx context.Context, userID, username string)
 		return nil, err
 	}
 
+	attachAddressToProfile(&p, dbAddress)
+
 	return &p, nil
 }
 func (r *ProfileRepository) GetByID(ctx context.Context, userID string) (*Profile, error) {
 	query := `
-		select id, username, avatar_url, bio, created_at, updated_at
+		select id, username, avatar_url, bio, address_number, created_at, updated_at
 		from public.profiles
 		where id = $1
 	`
 
 	var p Profile
+	var dbAddress sql.NullInt64
 	err := r.db.QueryRow(ctx, query, userID).Scan(
 		&p.ID,
 		&p.Username,
 		&p.AvatarURL,
 		&p.Bio,
+		&dbAddress,
 		&p.CreatedAt,
 		&p.UpdatedAt,
 	)
@@ -628,6 +679,8 @@ func (r *ProfileRepository) GetByID(ctx context.Context, userID string) (*Profil
 		}
 		return nil, err
 	}
+
+	attachAddressToProfile(&p, dbAddress)
 
 	return &p, nil
 }
@@ -644,6 +697,7 @@ func (r *ProfileRepository) ListUsers(ctx context.Context, currentUserID string,
 			p.id,
 			p.username,
 			p.avatar_url,
+			p.address_number,
 			case
 				when f.user_low is not null then 'friend'
 				when fr_sent.id is not null then 'request_sent'
@@ -664,7 +718,7 @@ func (r *ProfileRepository) ListUsers(ctx context.Context, currentUserID string,
 			and fr_received.to_user_id = $1
 			and fr_received.status = 'pending'
 		where p.id <> $1
-		order by p.username_lower asc
+		order by p.address_number asc nulls last, p.username_lower asc
 		limit $2 offset $3
 	`
 
@@ -677,14 +731,17 @@ func (r *ProfileRepository) ListUsers(ctx context.Context, currentUserID string,
 	var users []UserListItem
 	for rows.Next() {
 		var u UserListItem
+		var dbAddress sql.NullInt64
 		if err := rows.Scan(
 			&u.ID,
 			&u.Username,
 			&u.AvatarURL,
+			&dbAddress,
 			&u.RelationshipStatus,
 		); err != nil {
 			return nil, err
 		}
+		attachAddressToUserListItem(&u, dbAddress)
 		users = append(users, u)
 	}
 
@@ -695,12 +752,12 @@ func (r *ProfileRepository) ListUsers(ctx context.Context, currentUserID string,
 	return users, nil
 }
 
-
 type Client struct {
 	baseURL    string
 	anonKey    string
 	httpClient *http.Client
 }
+
 func NewClient(cfg Config) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(cfg.SupabaseURL, "/"),
@@ -742,7 +799,6 @@ func GetPool() (*pgxpool.Pool, error) {
 
 		cfg := Load()
 
-
 		if cfg.DatabaseURL == "" {
 			err = fmt.Errorf("DATABASE_URL no configurada")
 			return
@@ -777,11 +833,11 @@ func GetPool() (*pgxpool.Pool, error) {
 		fmt.Println("Haciendo ping a la ..")
 
 		if pingErr := pool.Ping(ctx); pingErr != nil {
-    	pool.Close()
-    	pool = nil
-    	err = fmt.Errorf("ping db: %w", pingErr)
-    	return
-    }
+			pool.Close()
+			pool = nil
+			err = fmt.Errorf("ping db: %w", pingErr)
+			return
+		}
 
 		fmt.Println("Conexión a DB exitosa")
 	})
@@ -860,7 +916,6 @@ func RequireAuth() gin.HandlerFunc {
 	}
 }
 
-
 // handlers
 func Me(c *gin.Context) {
 	rawUser, exists := c.Get(ContextUserKey)
@@ -904,9 +959,9 @@ func Me(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"success": true,
 				"data": gin.H{
-					"id":            user.ID,
-					"email":         user.Email,
-					"role":          user.Role,
+					"id":             user.ID,
+					"email":          user.Email,
+					"role":           user.Role,
 					"profile_exists": false,
 				},
 			})
@@ -1006,31 +1061,31 @@ func AcceptFriendRequest(c *gin.Context) {
 			}
 
 			if err != nil {
-      	if errors.Is(err, ErrFriendRequestNotFound) {
-      		c.JSON(http.StatusNotFound, gin.H{
-      			"success": false,
-      			"error":   "friend_request_not_found",
-      			"message": "La solicitud de amistad no existe",
-      		})
-      		return
-      	}
-      
-      	if errors.Is(err, ErrTargetProfileNotFound) {
-      		c.JSON(http.StatusNotFound, gin.H{
-      			"success": false,
-      			"error":   "target_profile_not_found",
-      			"message": "Perfil destino no encontrado",
-      		})
-      		return
-      	}
-      
-      	c.JSON(http.StatusInternalServerError, gin.H{
-      		"success": false,
-      		"error":   "accept_friend_request_failed",
-      		"message": "No se pudo aceptar la solicitud",
-      	})
-      	return
-      }
+				if errors.Is(err, ErrFriendRequestNotFound) {
+					c.JSON(http.StatusNotFound, gin.H{
+						"success": false,
+						"error":   "friend_request_not_found",
+						"message": "La solicitud de amistad no existe",
+					})
+					return
+				}
+
+				if errors.Is(err, ErrTargetProfileNotFound) {
+					c.JSON(http.StatusNotFound, gin.H{
+						"success": false,
+						"error":   "target_profile_not_found",
+						"message": "Perfil destino no encontrado",
+					})
+					return
+				}
+
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"success": false,
+					"error":   "accept_friend_request_failed",
+					"message": "No se pudo aceptar la solicitud",
+				})
+				return
+			}
 		}
 	}
 
@@ -1552,6 +1607,24 @@ func ProfileSetup(c *gin.Context) {
 		return
 	}
 
+	if req.AddressNumber < 101 || req.AddressNumber > 999 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "invalid_address_number",
+			"message": "La dirección debe estar entre 101 y 999",
+		})
+		return
+	}
+
+	if req.AddressNumber%100 == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "invalid_address_number",
+			"message": "El lote no puede terminar en 00",
+		})
+		return
+	}
+
 	pool, err := GetPool()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -1567,7 +1640,7 @@ func ProfileSetup(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	profile, err := repo.Create(ctx, user.ID, req.Username)
+	profile, err := repo.Create(ctx, user.ID, req.Username, req.AddressNumber)
 	if err != nil {
 		switch err {
 		case ErrUsernameTaken:
@@ -1575,6 +1648,13 @@ func ProfileSetup(c *gin.Context) {
 				"success": false,
 				"error":   "username_taken",
 				"message": "El username ya está en uso",
+			})
+			return
+		case ErrAddressTaken:
+			c.JSON(http.StatusConflict, gin.H{
+				"success": false,
+				"error":   "address_taken",
+				"message": "Esa dirección ya está ocupada",
 			})
 			return
 		case ErrProfileAlreadyExists:
@@ -1671,7 +1751,6 @@ func ListUsers(c *gin.Context) {
 		return
 	}
 
-
 	limit := 20
 	if raw := c.Query("limit"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
@@ -1730,7 +1809,8 @@ func ListUsers(c *gin.Context) {
 		"data":    users,
 	})
 }
-//router
+
+// router
 func init() {
 	gin.SetMode(gin.ReleaseMode)
 
@@ -1766,8 +1846,8 @@ func init() {
 		ExposeHeaders: []string{
 			"Content-Length",
 		},
-		AllowCredentials:         false,
-		MaxAge:                   12 * time.Hour,
+		AllowCredentials:          false,
+		MaxAge:                    12 * time.Hour,
 		OptionsResponseStatusCode: 200,
 	}))
 

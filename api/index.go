@@ -703,7 +703,6 @@ func (r *ProfileRepository) ListUsers(ctx context.Context, currentUserID string,
 			on fr_received.from_user_id = p.id
 			and fr_received.to_user_id = $1
 			and fr_received.status = 'pending'
-		where p.id <> $1
 		order by p.address_number asc nulls last, p.username_lower asc
 		limit $2 offset $3
 	`

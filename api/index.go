@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -28,6 +29,59 @@ var (
 	router         *gin.Engine
 	pool           *pgxpool.Pool
 	err            error
+)
+
+// rate limiting
+type ipRateLimiter struct {
+	mu      sync.Mutex
+	clients map[string][]time.Time
+}
+
+func newRateLimiter() *ipRateLimiter {
+	return &ipRateLimiter{clients: make(map[string][]time.Time)}
+}
+
+func (rl *ipRateLimiter) allow(ip string, limit int, window time.Duration) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-window)
+
+	reqs := rl.clients[ip]
+	valid := reqs[:0]
+	for _, t := range reqs {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+
+	if len(valid) >= limit {
+		rl.clients[ip] = valid
+		return false
+	}
+	rl.clients[ip] = append(valid, now)
+	return true
+}
+
+func (rl *ipRateLimiter) Middleware(limit int, window time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !rl.allow(c.ClientIP(), limit, window) {
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"success": false,
+				"error":   "rate_limit_exceeded",
+				"message": "Demasiadas solicitudes, intentá de nuevo en un momento",
+			})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+var (
+	generalLimiter   = newRateLimiter() // 100 req/min — todas las rutas
+	sensitiveLimiter = newRateLimiter() // 15 req/min — operaciones de escritura sensibles
 )
 
 // config
@@ -2175,6 +2229,20 @@ func ListUsers(c *gin.Context) {
 	})
 }
 
+func isValidStorageURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Host != ""
+}
+
+func isValidAction(s string) bool {
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
 func AddPhoto(c *gin.Context) {
 	rawUser, exists := c.Get(ContextUserKey)
 	if !exists {
@@ -2191,6 +2259,10 @@ func AddPhoto(c *gin.Context) {
 	body.URL = strings.TrimSpace(body.URL)
 	if body.URL == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "missing_url", "message": "Falta la URL de la foto"})
+		return
+	}
+	if !isValidStorageURL(body.URL) {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid_url", "message": "La URL de la foto no es válida"})
 		return
 	}
 
@@ -2513,6 +2585,10 @@ func SpendCredits(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "missing_action", "message": "Falta la acción"})
 		return
 	}
+	if len(body.Action) > 50 || !isValidAction(body.Action) {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": "invalid_action", "message": "La acción solo puede contener letras, números y guiones bajos (máx. 50 caracteres)"})
+		return
+	}
 
 	pool, err := GetPool()
 	if err != nil {
@@ -2582,7 +2658,14 @@ func init() {
 		c.Status(200)
 	})
 
+	// Limitar tamaño del body a 1MB
+	router.Use(func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+		c.Next()
+	})
+
 	api := router.Group("/api")
+	api.Use(generalLimiter.Middleware(100, time.Minute))
 	{
 		api.GET("/health", Health)
 
@@ -2590,10 +2673,10 @@ func init() {
 		protected.Use(RequireAuth())
 		{
 			protected.GET("/me", Me)
-			protected.POST("/profile/setup", ProfileSetup)
+			protected.POST("/profile/setup", sensitiveLimiter.Middleware(5, time.Minute), ProfileSetup)
 			protected.GET("/users", ListUsers)
 
-			protected.POST("/friend-requests", CreateFriendRequest)
+			protected.POST("/friend-requests", sensitiveLimiter.Middleware(15, time.Minute), CreateFriendRequest)
 			protected.GET("/friend-requests/received", ListReceivedFriendRequests)
 			protected.POST("/friend-requests/:id/accept", AcceptFriendRequest)
 
@@ -2609,7 +2692,7 @@ func init() {
 			protected.POST("/photos", AddPhoto)
 			protected.DELETE("/photos/:photoId", DeletePhoto)
 			protected.GET("/albums/:userId", GetAlbum)
-			protected.POST("/albums/:userId/request-access", RequestAlbumAccess)
+			protected.POST("/albums/:userId/request-access", sensitiveLimiter.Middleware(15, time.Minute), RequestAlbumAccess)
 			protected.GET("/album-access-requests/received", ListAlbumAccessRequests)
 			protected.POST("/album-access-requests/:id/accept", AcceptAlbumAccessRequest)
 			protected.POST("/album-access-requests/:id/reject", RejectAlbumAccessRequest)
@@ -2617,7 +2700,7 @@ func init() {
 			// Créditos
 			protected.GET("/credits", GetCredits)
 			protected.GET("/credits/history", GetCreditHistory)
-			protected.POST("/credits/spend", SpendCredits)
+			protected.POST("/credits/spend", sensitiveLimiter.Middleware(15, time.Minute), SpendCredits)
 		}
 	}
 }
